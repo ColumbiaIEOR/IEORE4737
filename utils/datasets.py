@@ -1,3 +1,14 @@
+"""
+Dataset loading utilities.
+
+Provides reusable CIFAR-10 loaders for both standard DINOv2 feature
+extraction and adversarial attack experiments.
+
+Clean embedding experiments use ImageNet normalization during loading.
+Adversarial experiments can request raw [0, 1] tensors so perturbations
+such as epsilon=8/255 are applied in pixel space.
+"""
+
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 
@@ -12,17 +23,22 @@ def get_cifar10_loader(
     train=False,
     image_size=224,
     num_workers=0,
+    normalize=True,
 ):
-    transform = transforms.Compose(
-        [
-            transforms.Resize((image_size, image_size)),
-            transforms.ToTensor(),
+    transform_steps = [
+        transforms.Resize((image_size, image_size)),
+        transforms.ToTensor(),
+    ]
+
+    if normalize:
+        transform_steps.append(
             transforms.Normalize(
                 mean=IMAGENET_MEAN,
                 std=IMAGENET_STD,
-            ),
-        ]
-    )
+            )
+        )
+
+    transform = transforms.Compose(transform_steps)
 
     dataset = datasets.CIFAR10(
         root=root,

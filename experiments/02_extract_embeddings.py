@@ -1,3 +1,28 @@
+"""
+Experiment:
+    02 DINOv2 Embedding Extraction
+
+Objective:
+    Extract frozen DINOv2 feature representations for CIFAR-10 images using
+    the pretrained DINOv2 ViT-S/14 encoder.
+
+Inputs:
+    - CIFAR-10 test dataset
+    - Pretrained DINOv2 ViT-S/14 encoder
+
+Outputs:
+    - 384-dimensional embedding for each image
+    - CIFAR-10 labels
+    - Saved embedding file under data/processed/embeddings/
+
+Research Goal:
+    Build the clean visual representation baseline that will later be compared
+    against adversarially perturbed examples.
+
+Next Experiment:
+    03_pca_clean.py
+"""
+
 from encoders.dinov2 import DinoV2Encoder
 from pipelines.dinov2_pipeline import (
     extract_embeddings,
