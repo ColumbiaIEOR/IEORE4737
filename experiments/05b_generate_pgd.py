@@ -1,6 +1,6 @@
 """
 Experiment:
-    05B PGD Adversarial Sanity Check
+    05B PGD Adversarial Sanity / Scale Test
 
 Objective:
     Generate PGD adversarial examples against the differentiable
@@ -11,25 +11,28 @@ Inputs:
     - CIFAR-10 test images in raw [0, 1] pixel space
     - Pretrained DINOv2 ViT-S/14 encoder
     - Trained CIFAR-10 linear classification head
+    - Number of samples passed through --num-samples
 
 Outputs:
-    - Clean accuracy on the sampled images
-    - Adversarial accuracy after PGD
+    - Clean accuracy
+    - Adversarial accuracy
     - Attack success rate
     - Saved clean/adversarial image pairs and predictions
+    - Saved experiment metrics
 
 Research Goal:
-    Validate the PGD attack pipeline before scaling adversarial
-    generation to larger datasets.
+    Validate and scale the PGD attack pipeline before comparing
+    representation shifts and training adversarial detectors.
 
 Next Experiment:
     06_extract_pgd_embeddings.py
 """
 
+import argparse
 from pathlib import Path
 
 import torch
-from torch.utils.data import Subset, DataLoader
+from torch.utils.data import DataLoader, Subset
 
 from attacks.pgd import pgd_attack
 from detectors.linear_head import LinearHead
@@ -44,17 +47,6 @@ MODEL_PATH = (
     "dinov2_vits14_cifar10_linear_head.pt"
 )
 
-OUTPUT_PATH = Path(
-    "data/processed/adversarial/"
-    "cifar10/pgd_100.pt"
-)
-
-METRICS_PATH = (
-    "results/metrics/"
-    "05b_pgd_sanity_metrics.json"
-)
-
-NUM_SAMPLES = 100
 BATCH_SIZE = 20
 
 EPSILON = 8 / 255
@@ -62,13 +54,41 @@ ALPHA = 2 / 255
 STEPS = 10
 
 
-def evaluate_predictions(model, images):
+def parse_args():
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument(
+        "--num-samples",
+        type=int,
+        default=100,
+        help="Number of CIFAR-10 test images to attack.",
+    )
+
+    return parser.parse_args()
+
+
+def get_predictions(model, images):
     with torch.no_grad():
         logits = model(images)
-        return logits.argmax(dim=1)
+
+    return logits.argmax(dim=1)
 
 
 def main():
+    args = parse_args()
+
+    num_samples = args.num_samples
+
+    output_path = Path(
+        "data/processed/adversarial/"
+        f"cifar10/pgd_{num_samples}.pt"
+    )
+
+    metrics_path = (
+        "results/metrics/"
+        f"05b_pgd_{num_samples}_metrics.json"
+    )
+
     base_loader = get_cifar10_loader(
         batch_size=BATCH_SIZE,
         train=False,
@@ -79,7 +99,7 @@ def main():
 
     subset = Subset(
         base_loader.dataset,
-        range(NUM_SAMPLES),
+        range(num_samples),
     )
 
     loader = DataLoader(
@@ -119,9 +139,14 @@ def main():
 
     model.eval()
 
-    all_clean = []
-    all_adversarial = []
+    for parameter in model.parameters():
+        parameter.requires_grad_(False)
+
+    all_clean_images = []
+    all_adversarial_images = []
+
     all_labels = []
+
     all_clean_predictions = []
     all_adversarial_predictions = []
 
@@ -131,14 +156,14 @@ def main():
 
     print(
         f"Generating PGD adversarial examples "
-        f"for {NUM_SAMPLES} images..."
+        f"for {num_samples} images..."
     )
 
-    for images, labels in loader:
+    for batch_index, (images, labels) in enumerate(loader):
         images = images.to(device)
         labels = labels.to(device)
 
-        clean_predictions = evaluate_predictions(
+        clean_predictions = get_predictions(
             model,
             images,
         )
@@ -153,7 +178,7 @@ def main():
             random_start=True,
         )
 
-        adversarial_predictions = evaluate_predictions(
+        adversarial_predictions = get_predictions(
             model,
             adversarial_images,
         )
@@ -168,11 +193,11 @@ def main():
 
         total += labels.size(0)
 
-        all_clean.append(
+        all_clean_images.append(
             images.detach().cpu()
         )
 
-        all_adversarial.append(
+        all_adversarial_images.append(
             adversarial_images.detach().cpu()
         )
 
@@ -188,29 +213,63 @@ def main():
             adversarial_predictions.detach().cpu()
         )
 
-    clean_accuracy = clean_correct / total
-    adversarial_accuracy = adversarial_correct / total
+        print(
+            f"Processed batch "
+            f"{batch_index + 1}/{len(loader)}"
+        )
 
-    successful_attacks = sum(
-        (
-            clean_pred == label
-            and adv_pred != label
-        )
-        for clean_pred, adv_pred, label in zip(
-            torch.cat(all_clean_predictions),
-            torch.cat(all_adversarial_predictions),
-            torch.cat(all_labels),
-        )
+    clean_images = torch.cat(
+        all_clean_images,
+        dim=0,
     )
 
-    originally_correct = sum(
-        (
-            clean_pred == label
-        )
-        for clean_pred, label in zip(
-            torch.cat(all_clean_predictions),
-            torch.cat(all_labels),
-        )
+    adversarial_images = torch.cat(
+        all_adversarial_images,
+        dim=0,
+    )
+
+    labels = torch.cat(
+        all_labels,
+        dim=0,
+    )
+
+    clean_predictions = torch.cat(
+        all_clean_predictions,
+        dim=0,
+    )
+
+    adversarial_predictions = torch.cat(
+        all_adversarial_predictions,
+        dim=0,
+    )
+
+    clean_accuracy = (
+        clean_correct / total
+    )
+
+    adversarial_accuracy = (
+        adversarial_correct / total
+    )
+
+    originally_correct_mask = (
+        clean_predictions == labels
+    )
+
+    successful_attack_mask = (
+        originally_correct_mask
+        & (adversarial_predictions != labels)
+    )
+
+    originally_correct = (
+        originally_correct_mask
+        .sum()
+        .item()
+    )
+
+    successful_attacks = (
+        successful_attack_mask
+        .sum()
+        .item()
     )
 
     attack_success_rate = (
@@ -219,27 +278,40 @@ def main():
         else 0.0
     )
 
-    OUTPUT_PATH.parent.mkdir(
+    perturbations = (
+        adversarial_images
+        - clean_images
+    ).abs()
+
+    max_linf_perturbation = (
+        perturbations
+        .amax()
+        .item()
+    )
+
+    mean_absolute_perturbation = (
+        perturbations
+        .mean()
+        .item()
+    )
+
+    output_path.parent.mkdir(
         parents=True,
         exist_ok=True,
     )
 
     torch.save(
         {
-            "clean_images": torch.cat(all_clean),
-            "adversarial_images": torch.cat(all_adversarial),
-            "labels": torch.cat(all_labels),
-            "clean_predictions": torch.cat(
-                all_clean_predictions
-            ),
-            "adversarial_predictions": torch.cat(
-                all_adversarial_predictions
-            ),
+            "clean_images": clean_images,
+            "adversarial_images": adversarial_images,
+            "labels": labels,
+            "clean_predictions": clean_predictions,
+            "adversarial_predictions": adversarial_predictions,
             "epsilon": EPSILON,
             "alpha": ALPHA,
             "steps": STEPS,
         },
-        OUTPUT_PATH,
+        output_path,
     )
 
     metrics = {
@@ -247,27 +319,80 @@ def main():
         "dataset": "cifar10",
         "encoder": "dinov2_vits14",
         "num_samples": total,
+        "batch_size": BATCH_SIZE,
         "epsilon": EPSILON,
         "alpha": ALPHA,
         "steps": STEPS,
         "clean_accuracy": clean_accuracy,
         "adversarial_accuracy": adversarial_accuracy,
-        "attack_success_rate": attack_success_rate,
         "originally_correct": originally_correct,
         "successful_attacks": successful_attacks,
+        "attack_success_rate": attack_success_rate,
+        "max_linf_perturbation": max_linf_perturbation,
+        "mean_absolute_perturbation": (
+            mean_absolute_perturbation
+        ),
     }
 
     save_metrics(
         metrics,
-        METRICS_PATH,
+        metrics_path,
     )
 
     print()
-    print(f"Clean accuracy:       {clean_accuracy:.4f}")
-    print(f"Adversarial accuracy: {adversarial_accuracy:.4f}")
-    print(f"Attack success rate:  {attack_success_rate:.4f}")
+    print("PGD results")
+    print("-----------")
+
+    print(
+        f"Samples:               "
+        f"{total}"
+    )
+
+    print(
+        f"Clean accuracy:        "
+        f"{clean_accuracy:.4f}"
+    )
+
+    print(
+        f"Adversarial accuracy:  "
+        f"{adversarial_accuracy:.4f}"
+    )
+
+    print(
+        f"Originally correct:    "
+        f"{originally_correct}"
+    )
+
+    print(
+        f"Successful attacks:    "
+        f"{successful_attacks}"
+    )
+
+    print(
+        f"Attack success rate:   "
+        f"{attack_success_rate:.4f}"
+    )
+
+    print(
+        f"Max L-inf perturbation:"
+        f" {max_linf_perturbation:.6f}"
+    )
+
+    print(
+        f"Configured epsilon:    "
+        f"{EPSILON:.6f}"
+    )
+
     print()
-    print(f"Saved adversarial samples to {OUTPUT_PATH}")
+    print(
+        f"Saved adversarial samples to "
+        f"{output_path}"
+    )
+
+    print(
+        f"Saved metrics to "
+        f"{metrics_path}"
+    )
 
 
 if __name__ == "__main__":
