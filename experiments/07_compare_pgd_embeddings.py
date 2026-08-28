@@ -8,6 +8,7 @@ Objective:
 
 Inputs:
     - Paired clean/adversarial DINOv2 embeddings from Experiment 06
+    - Number of samples passed through --num-samples
 
 Outputs:
     - Mean and standard deviation of cosine similarity
@@ -18,13 +19,15 @@ Outputs:
     - PCA figure comparing clean and PGD embeddings
 
 Research Goal:
-    Determine whether successful adversarial attacks produce a measurable and
-    structured shift in DINOv2 representation space.
+    Determine whether successful adversarial attacks produce a measurable
+    and structured shift in DINOv2 representation space, and verify that
+    the pattern persists as the sample size increases.
 
 Next Experiment:
     08_train_adversarial_detector.py
 """
 
+import argparse
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -35,28 +38,44 @@ from sklearn.decomposition import PCA
 from utils.results import save_metrics
 
 
-INPUT_PATH = (
-    "data/processed/embeddings/"
-    "cifar10/pgd_100_dinov2_vits14.pt"
-)
+def parse_args():
+    parser = argparse.ArgumentParser()
 
-METRICS_PATH = (
-    "results/metrics/"
-    "07_pgd_embedding_comparison.json"
-)
+    parser.add_argument(
+        "--num-samples",
+        type=int,
+        default=100,
+        help="Number of paired clean/PGD embeddings to analyze.",
+    )
 
-FIGURE_PATH = Path(
-    "results/figures/"
-    "07_clean_vs_pgd_pca.png"
-)
+    return parser.parse_args()
 
 
 def main():
+    args = parse_args()
+
+    num_samples = args.num_samples
+
+    input_path = (
+        "data/processed/embeddings/"
+        f"cifar10/pgd_{num_samples}_dinov2_vits14.pt"
+    )
+
+    metrics_path = (
+        "results/metrics/"
+        f"07_pgd_{num_samples}_embedding_comparison.json"
+    )
+
+    figure_path = Path(
+        "results/figures/"
+        f"07_clean_vs_pgd_pca_{num_samples}.png"
+    )
+
     # ---------------------------------------------------------
     # 1. Load paired clean/adversarial embeddings.
     # ---------------------------------------------------------
     data = torch.load(
-        INPUT_PATH,
+        input_path,
         map_location="cpu",
     )
 
@@ -70,8 +89,6 @@ def main():
         .float()
     )
 
-    labels = data["labels"]
-
     print(
         "Clean embeddings:",
         clean_embeddings.shape,
@@ -82,11 +99,16 @@ def main():
         adversarial_embeddings.shape,
     )
 
+    actual_samples = clean_embeddings.shape[0]
+
+    if actual_samples != num_samples:
+        raise ValueError(
+            f"Requested {num_samples} samples, "
+            f"but input file contains {actual_samples}."
+        )
+
     # ---------------------------------------------------------
     # 2. Cosine similarity.
-    #
-    # 1.0 means the vectors point in essentially the same direction.
-    # Lower values indicate a greater representation shift.
     # ---------------------------------------------------------
     cosine_similarity = F.cosine_similarity(
         clean_embeddings,
@@ -159,41 +181,24 @@ def main():
         "experiment": "07_compare_pgd_embeddings",
         "dataset": "cifar10",
         "encoder": "dinov2_vits14",
-        "num_samples": clean_embeddings.shape[0],
+        "num_samples": actual_samples,
         "embedding_dimension": clean_embeddings.shape[1],
-        "mean_cosine_similarity": (
-            mean_cosine_similarity
-        ),
-        "std_cosine_similarity": (
-            std_cosine_similarity
-        ),
-        "mean_euclidean_distance": (
-            mean_euclidean_distance
-        ),
-        "std_euclidean_distance": (
-            std_euclidean_distance
-        ),
-        "mean_clean_embedding_norm": (
-            mean_clean_norm
-        ),
-        "mean_adversarial_embedding_norm": (
-            mean_adversarial_norm
-        ),
-        "mean_absolute_norm_change": (
-            mean_absolute_norm_change
-        ),
+        "mean_cosine_similarity": mean_cosine_similarity,
+        "std_cosine_similarity": std_cosine_similarity,
+        "mean_euclidean_distance": mean_euclidean_distance,
+        "std_euclidean_distance": std_euclidean_distance,
+        "mean_clean_embedding_norm": mean_clean_norm,
+        "mean_adversarial_embedding_norm": mean_adversarial_norm,
+        "mean_absolute_norm_change": mean_absolute_norm_change,
     }
 
     save_metrics(
         metrics,
-        METRICS_PATH,
+        metrics_path,
     )
 
     # ---------------------------------------------------------
     # 6. Joint PCA.
-    #
-    # Fit one PCA model to the combined clean/adversarial embeddings
-    # so both sets are projected into the same coordinate system.
     # ---------------------------------------------------------
     combined_embeddings = torch.cat(
         [
@@ -211,17 +216,26 @@ def main():
         combined_embeddings
     )
 
-    num_samples = clean_embeddings.shape[0]
-
     clean_2d = reduced[
-        :num_samples
+        :actual_samples
     ]
 
     adversarial_2d = reduced[
-        num_samples:
+        actual_samples:
     ]
 
-    FIGURE_PATH.parent.mkdir(
+    explained_variance = (
+        pca.explained_variance_ratio_.sum()
+    )
+
+    # ---------------------------------------------------------
+    # 7. Save PCA plot.
+    #
+    # With 1,000 samples, drawing every pairwise connecting line
+    # would make the plot unreadable. Only draw pair lines for
+    # smaller exploratory runs.
+    # ---------------------------------------------------------
+    figure_path.parent.mkdir(
         parents=True,
         exist_ok=True,
     )
@@ -234,47 +248,46 @@ def main():
         clean_2d[:, 0],
         clean_2d[:, 1],
         label="Clean",
-        alpha=0.7,
-        s=30,
+        alpha=0.55,
+        s=18,
     )
 
     plt.scatter(
         adversarial_2d[:, 0],
         adversarial_2d[:, 1],
         label="PGD",
-        alpha=0.7,
-        s=30,
+        alpha=0.55,
+        s=18,
     )
 
-    # Draw a line between each clean/adversarial pair.
-    for i in range(num_samples):
-        plt.plot(
-            [
-                clean_2d[i, 0],
-                adversarial_2d[i, 0],
-            ],
-            [
-                clean_2d[i, 1],
-                adversarial_2d[i, 1],
-            ],
-            alpha=0.15,
-            linewidth=0.7,
-        )
+    if actual_samples <= 200:
+        for i in range(actual_samples):
+            plt.plot(
+                [
+                    clean_2d[i, 0],
+                    adversarial_2d[i, 0],
+                ],
+                [
+                    clean_2d[i, 1],
+                    adversarial_2d[i, 1],
+                ],
+                alpha=0.12,
+                linewidth=0.6,
+            )
 
     plt.xlabel("PC1")
     plt.ylabel("PC2")
 
     plt.title(
-        "DINOv2 Representation Shift: "
-        "Clean vs PGD"
+        f"DINOv2 Representation Shift: "
+        f"Clean vs PGD (n={actual_samples})"
     )
 
     plt.legend()
-
     plt.tight_layout()
 
     plt.savefig(
-        FIGURE_PATH,
+        figure_path,
         dpi=300,
         bbox_inches="tight",
     )
@@ -282,11 +295,16 @@ def main():
     plt.show()
 
     # ---------------------------------------------------------
-    # 7. Print summary.
+    # 8. Print summary.
     # ---------------------------------------------------------
     print()
     print("Embedding comparison results")
     print("----------------------------")
+
+    print(
+        f"Samples:                    "
+        f"{actual_samples}"
+    )
 
     print(
         f"Mean cosine similarity:     "
@@ -323,15 +341,20 @@ def main():
         f"{mean_absolute_norm_change:.4f}"
     )
 
+    print(
+        f"PCA variance explained:     "
+        f"{explained_variance:.4f}"
+    )
+
     print()
     print(
         f"Saved metrics to "
-        f"{METRICS_PATH}"
+        f"{metrics_path}"
     )
 
     print(
         f"Saved figure to "
-        f"{FIGURE_PATH}"
+        f"{figure_path}"
     )
 
 

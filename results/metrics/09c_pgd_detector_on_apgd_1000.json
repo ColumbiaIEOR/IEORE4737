@@ -1,0 +1,27 @@
+{
+    "experiment": "09c_evaluate_pgd_detector_on_apgd",
+    "dataset": "cifar10",
+    "encoder": "dinov2_vits14",
+    "detector_training_attack": "pgd",
+    "evaluation_attack": "apgd",
+    "num_image_pairs": 1000,
+    "num_embeddings": 2000,
+    "accuracy": 0.989,
+    "roc_auc": 0.9884640000000001,
+    "clean_precision": 0.9784735812133072,
+    "clean_recall": 1.0,
+    "clean_f1": 0.9891196834817013,
+    "apgd_precision": 1.0,
+    "apgd_recall": 0.978,
+    "apgd_f1": 0.9888776541961577,
+    "confusion_matrix": [
+        [
+            1000,
+            0
+        ],
+        [
+            22,
+            978
+        ]
+    ]
+}

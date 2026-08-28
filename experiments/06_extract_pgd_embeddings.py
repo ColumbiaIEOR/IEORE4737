@@ -9,6 +9,7 @@ Objective:
 Inputs:
     - Saved clean/adversarial image pairs from Experiment 05B
     - Pretrained DINOv2 ViT-S/14 encoder
+    - Number of samples passed through --num-samples
 
 Outputs:
     - Clean DINOv2 embeddings
@@ -25,6 +26,7 @@ Next Experiment:
     07_compare_pgd_embeddings.py
 """
 
+import argparse
 from pathlib import Path
 
 import torch
@@ -34,17 +36,20 @@ from tqdm import tqdm
 from encoders.dinov2 import DinoV2Encoder
 
 
-INPUT_PATH = (
-    "data/processed/adversarial/"
-    "cifar10/pgd_100.pt"
-)
-
-OUTPUT_PATH = Path(
-    "data/processed/embeddings/"
-    "cifar10/pgd_100_dinov2_vits14.pt"
-)
-
 BATCH_SIZE = 20
+
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument(
+        "--num-samples",
+        type=int,
+        default=100,
+        help="Number of previously generated PGD samples to encode.",
+    )
+
+    return parser.parse_args()
 
 
 def extract_embeddings(
@@ -53,18 +58,21 @@ def extract_embeddings(
     batch_size,
 ):
     """
-    Extract DINOv2 embeddings from a tensor of images.
+    Extract DINOv2 embeddings from raw [0, 1] image tensors.
 
-    Images are expected to be in raw [0, 1] pixel space. This function
-    applies ImageNet normalization before passing them to DINOv2.
+    The images saved by Experiment 05B are intentionally kept in pixel
+    space. ImageNet normalization is applied here before passing them
+    through DINOv2.
     """
 
     mean = torch.tensor(
-        [0.485, 0.456, 0.406]
+        [0.485, 0.456, 0.406],
+        dtype=images.dtype,
     ).view(1, 3, 1, 1)
 
     std = torch.tensor(
-        [0.229, 0.224, 0.225]
+        [0.229, 0.224, 0.225],
+        dtype=images.dtype,
     ).view(1, 3, 1, 1)
 
     dataset = TensorDataset(images)
@@ -73,6 +81,7 @@ def extract_embeddings(
         dataset,
         batch_size=batch_size,
         shuffle=False,
+        num_workers=0,
     )
 
     all_embeddings = []
@@ -100,27 +109,51 @@ def extract_embeddings(
 
 
 def main():
+    args = parse_args()
+
+    num_samples = args.num_samples
+
+    input_path = (
+        "data/processed/adversarial/"
+        f"cifar10/pgd_{num_samples}.pt"
+    )
+
+    output_path = Path(
+        "data/processed/embeddings/"
+        f"cifar10/pgd_{num_samples}_dinov2_vits14.pt"
+    )
+
     # ---------------------------------------------------------
     # 1. Load clean/adversarial image pairs generated in 05B.
     # ---------------------------------------------------------
     data = torch.load(
-        INPUT_PATH,
+        input_path,
         map_location="cpu",
     )
 
-    clean_images = data["clean_images"].float()
-    adversarial_images = (
-        data["adversarial_images"].float()
+    clean_images = (
+        data["clean_images"]
+        .float()
     )
 
-    labels = data["labels"].long()
+    adversarial_images = (
+        data["adversarial_images"]
+        .float()
+    )
+
+    labels = (
+        data["labels"]
+        .long()
+    )
 
     clean_predictions = (
-        data["clean_predictions"].long()
+        data["clean_predictions"]
+        .long()
     )
 
     adversarial_predictions = (
-        data["adversarial_predictions"].long()
+        data["adversarial_predictions"]
+        .long()
     )
 
     print(
@@ -139,14 +172,27 @@ def main():
     )
 
     # ---------------------------------------------------------
-    # 2. Load DINOv2.
+    # 2. Validate that the requested sample count matches the
+    #    saved attack file.
+    # ---------------------------------------------------------
+    actual_samples = clean_images.shape[0]
+
+    if actual_samples != num_samples:
+        raise ValueError(
+            f"Requested {num_samples} samples, "
+            f"but {input_path} contains "
+            f"{actual_samples}."
+        )
+
+    # ---------------------------------------------------------
+    # 3. Load DINOv2.
     # ---------------------------------------------------------
     encoder = DinoV2Encoder(
         model_name="dinov2_vits14",
     )
 
     # ---------------------------------------------------------
-    # 3. Extract embeddings for clean images.
+    # 4. Extract embeddings for clean images.
     # ---------------------------------------------------------
     print()
     print("Encoding clean images...")
@@ -158,7 +204,7 @@ def main():
     )
 
     # ---------------------------------------------------------
-    # 4. Extract embeddings for adversarial images.
+    # 5. Extract embeddings for adversarial images.
     # ---------------------------------------------------------
     print()
     print("Encoding adversarial images...")
@@ -170,17 +216,23 @@ def main():
     )
 
     # ---------------------------------------------------------
-    # 5. Sanity checks.
+    # 6. Sanity checks.
     # ---------------------------------------------------------
-    assert (
+    if (
         clean_embeddings.shape
-        == adversarial_embeddings.shape
-    )
+        != adversarial_embeddings.shape
+    ):
+        raise ValueError(
+            "Clean and adversarial embedding shapes do not match."
+        )
 
-    assert (
+    if (
         clean_embeddings.shape[0]
-        == labels.shape[0]
-    )
+        != labels.shape[0]
+    ):
+        raise ValueError(
+            "Embedding count does not match label count."
+        )
 
     print()
     print(
@@ -194,9 +246,9 @@ def main():
     )
 
     # ---------------------------------------------------------
-    # 6. Save paired embedding data.
+    # 7. Save paired embedding data.
     # ---------------------------------------------------------
-    OUTPUT_PATH.parent.mkdir(
+    output_path.parent.mkdir(
         parents=True,
         exist_ok=True,
     )
@@ -204,25 +256,21 @@ def main():
     torch.save(
         {
             "clean_embeddings": clean_embeddings,
-            "adversarial_embeddings": (
-                adversarial_embeddings
-            ),
+            "adversarial_embeddings": adversarial_embeddings,
             "labels": labels,
             "clean_predictions": clean_predictions,
-            "adversarial_predictions": (
-                adversarial_predictions
-            ),
+            "adversarial_predictions": adversarial_predictions,
             "epsilon": data["epsilon"],
             "alpha": data["alpha"],
             "steps": data["steps"],
         },
-        OUTPUT_PATH,
+        output_path,
     )
 
     print()
     print(
         f"Saved paired embeddings to "
-        f"{OUTPUT_PATH}"
+        f"{output_path}"
     )
 
 
