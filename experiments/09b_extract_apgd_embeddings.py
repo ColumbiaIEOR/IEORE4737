@@ -7,28 +7,44 @@ Objective:
     adversarial CIFAR-10 image pairs generated in Experiment 09A.
 
 Inputs:
-    - Saved clean/APGD image pairs
+    - Saved clean/APGD image pairs from official CIFAR-10 TEST
     - Pretrained DINOv2 ViT-S/14 encoder
     - Number of samples passed through --num-samples
+
+Method:
+    - Load the clean/APGD image pairs generated in Experiment 09A.
+    - Verify the adversarial file follows the corrected data protocol:
+        classifier trained on official CIFAR-10 TRAIN
+        attack images drawn from official CIFAR-10 TEST
+    - Apply ImageNet normalization.
+    - Extract frozen 384-dimensional DINOv2 ViT-S/14 embeddings for
+      both clean and APGD images.
 
 Outputs:
     - Clean DINOv2 embeddings
     - APGD DINOv2 embeddings
     - Labels and predictions
+    - Attack and data-lineage metadata
     - Saved paired embedding file
 
 Research Goal:
     Produce APGD representation data for cross-attack evaluation
     against the detector trained only on PGD.
 
+Important Limitation:
+    APGD is closely related to PGD, so successful transfer does not
+    establish generalization to structurally different attack families.
+
 Next Experiment:
-    09C Evaluate frozen PGD detector on APGD.
+    09C Evaluate the frozen PGD detector on APGD using only the exact
+    detector-held-out image IDs from Experiment 08.
 """
 
 import argparse
 from pathlib import Path
 
 import torch
+
 from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
 
@@ -36,6 +52,9 @@ from encoders.dinov2 import DinoV2Encoder
 
 
 BATCH_SIZE = 20
+
+EXPECTED_SOURCE_SPLIT = "official_cifar10_test"
+EXPECTED_CLASSIFIER_TRAINING_SPLIT = "official_cifar10_train"
 
 
 def parse_args():
@@ -59,14 +78,26 @@ def extract_embeddings(
     mean = torch.tensor(
         [0.485, 0.456, 0.406],
         dtype=images.dtype,
-    ).view(1, 3, 1, 1)
+    ).view(
+        1,
+        3,
+        1,
+        1,
+    )
 
     std = torch.tensor(
         [0.229, 0.224, 0.225],
         dtype=images.dtype,
-    ).view(1, 3, 1, 1)
+    ).view(
+        1,
+        3,
+        1,
+        1,
+    )
 
-    dataset = TensorDataset(images)
+    dataset = TensorDataset(
+        images
+    )
 
     loader = DataLoader(
         dataset,
@@ -90,7 +121,7 @@ def extract_embeddings(
         )
 
         all_embeddings.append(
-            embeddings
+            embeddings.detach().cpu()
         )
 
     return torch.cat(
@@ -101,6 +132,7 @@ def extract_embeddings(
 
 def main():
     args = parse_args()
+
     num_samples = args.num_samples
 
     input_path = (
@@ -112,6 +144,10 @@ def main():
         "data/processed/embeddings/"
         f"cifar10/apgd_{num_samples}_dinov2_vits14.pt"
     )
+
+    # ============================================================
+    # 1. Load APGD data from Experiment 09A.
+    # ============================================================
 
     data = torch.load(
         input_path,
@@ -143,11 +179,94 @@ def main():
         .long()
     )
 
+    # ============================================================
+    # 2. Verify corrected data protocol.
+    # ============================================================
+
+    source_split = data.get(
+        "source_split"
+    )
+
+    classifier_training_split = data.get(
+        "classifier_training_split"
+    )
+
+    classifier_evaluation_split = data.get(
+        "classifier_evaluation_split"
+    )
+
+    protocol_valid = (
+        source_split
+        == EXPECTED_SOURCE_SPLIT
+        and classifier_training_split
+        == EXPECTED_CLASSIFIER_TRAINING_SPLIT
+    )
+
+    print()
+    print("=" * 70)
+    print("APGD EMBEDDING EXTRACTION")
+    print("=" * 70)
+
+    print()
+    print("Data protocol")
+    print("-------------")
+
+    print(
+        f"Attack image source:       {source_split}"
+    )
+
+    print(
+        f"Classifier training split: {classifier_training_split}"
+    )
+
+    print(
+        f"Classifier eval split:     {classifier_evaluation_split}"
+    )
+
+    print(
+        "Corrected protocol valid: "
+        f"{protocol_valid}"
+    )
+
+    if not protocol_valid:
+        raise ValueError(
+            "APGD input file does not match the corrected "
+            "CIFAR-10 TRAIN -> TEST protocol."
+        )
+
+    # ============================================================
+    # 3. Validate shapes.
+    # ============================================================
+
     if clean_images.shape[0] != num_samples:
         raise ValueError(
             f"Requested {num_samples} samples, "
             f"but input contains {clean_images.shape[0]}."
         )
+
+    if clean_images.shape != adversarial_images.shape:
+        raise ValueError(
+            "Clean and APGD image shapes do not match."
+        )
+
+    if labels.shape[0] != num_samples:
+        raise ValueError(
+            "Label count does not match requested sample count."
+        )
+
+    if clean_predictions.shape[0] != num_samples:
+        raise ValueError(
+            "Clean prediction count does not match requested sample count."
+        )
+
+    if adversarial_predictions.shape[0] != num_samples:
+        raise ValueError(
+            "APGD prediction count does not match requested sample count."
+        )
+
+    print()
+    print("Input tensors")
+    print("-------------")
 
     print(
         "Clean images:",
@@ -155,13 +274,21 @@ def main():
     )
 
     print(
-        "APGD images:",
+        "APGD images: ",
         adversarial_images.shape,
     )
+
+    # ============================================================
+    # 4. Load frozen DINOv2 encoder.
+    # ============================================================
 
     encoder = DinoV2Encoder(
         model_name="dinov2_vits14",
     )
+
+    # ============================================================
+    # 5. Extract clean embeddings.
+    # ============================================================
 
     print()
     print("Encoding clean images...")
@@ -172,6 +299,10 @@ def main():
         BATCH_SIZE,
     )
 
+    # ============================================================
+    # 6. Extract APGD embeddings.
+    # ============================================================
+
     print()
     print("Encoding APGD images...")
 
@@ -180,6 +311,18 @@ def main():
         adversarial_images,
         BATCH_SIZE,
     )
+
+    if (
+        clean_embeddings.shape
+        != adversarial_embeddings.shape
+    ):
+        raise ValueError(
+            "Clean and APGD embedding shapes do not match."
+        )
+
+    # ============================================================
+    # 7. Save paired embeddings.
+    # ============================================================
 
     output_path.parent.mkdir(
         parents=True,
@@ -193,13 +336,45 @@ def main():
             "labels": labels,
             "clean_predictions": clean_predictions,
             "adversarial_predictions": adversarial_predictions,
+            "attack": data.get(
+                "attack",
+                "apgd",
+            ),
+            "norm": data.get(
+                "norm",
+                "Linf",
+            ),
             "epsilon": data["epsilon"],
             "steps": data["steps"],
+            "n_restarts": data.get(
+                "n_restarts"
+            ),
+            "seed": data.get(
+                "seed"
+            ),
+            "source_split": source_split,
+            "classifier_training_split": (
+                classifier_training_split
+            ),
+            "classifier_evaluation_split": (
+                classifier_evaluation_split
+            ),
+            "encoder": "dinov2_vits14",
+            "embedding_dim": int(
+                clean_embeddings.shape[1]
+            ),
         },
         output_path,
     )
 
+    # ============================================================
+    # 8. Print summary.
+    # ============================================================
+
     print()
+    print("Embedding extraction results")
+    print("----------------------------")
+
     print(
         "Clean embeddings:",
         clean_embeddings.shape,
@@ -211,6 +386,7 @@ def main():
     )
 
     print()
+
     print(
         f"Saved paired embeddings to "
         f"{output_path}"

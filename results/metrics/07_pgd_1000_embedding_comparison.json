@@ -4,11 +4,11 @@
     "encoder": "dinov2_vits14",
     "num_samples": 1000,
     "embedding_dimension": 384,
-    "mean_cosine_similarity": 0.15608400106430054,
-    "std_cosine_similarity": 0.10133764147758484,
-    "mean_euclidean_distance": 62.149749755859375,
-    "std_euclidean_distance": 4.274528503417969,
+    "mean_cosine_similarity": 0.16265973448753357,
+    "std_cosine_similarity": 0.10877713561058044,
+    "mean_euclidean_distance": 62.04008102416992,
+    "std_euclidean_distance": 4.5554656982421875,
     "mean_clean_embedding_norm": 47.59193801879883,
-    "mean_adversarial_embedding_norm": 48.215248107910156,
-    "mean_absolute_norm_change": 1.6304481029510498
+    "mean_adversarial_embedding_norm": 48.46380615234375,
+    "mean_absolute_norm_change": 1.6641454696655273
 }
