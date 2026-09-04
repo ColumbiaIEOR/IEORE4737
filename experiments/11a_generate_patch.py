@@ -18,6 +18,8 @@ Method:
     - Verify that the classification head follows the corrected
       official TRAIN -> TEST protocol.
     - Assign each image a deterministic random patch location.
+    - Generate each image's (top, left) patch location together so that
+      image IDs receive the same location across different sample counts.
     - Optimize the pixels inside a small localized patch independently
       for each image using gradient ascent on classification loss.
     - Pixels outside the patch remain identical to the clean image.
@@ -200,7 +202,7 @@ def generate_patch_attack(
 
         optimizer.step()
 
-        # Valid image range.
+        # Keep patch pixels in valid image range.
         with torch.no_grad():
             patch_values.clamp_(
                 0.0,
@@ -273,8 +275,9 @@ def main():
     # ============================================================
     # 2. Deterministically generate patch locations.
     #
-    # Locations are generated once using image ID order so they are
-    # reproducible and independent of optimization.
+    # Each image receives a (top, left) pair generated together.
+    # Therefore image ID i receives the same location whether this
+    # experiment is run with 100, 1000, or more samples.
     # ============================================================
 
     rng = np.random.default_rng(
@@ -286,16 +289,18 @@ def main():
         - PATCH_SIZE
     )
 
-    all_top_positions = rng.integers(
+    patch_locations = rng.integers(
         low=0,
         high=max_position + 1,
-        size=num_samples,
+        size=(num_samples, 2),
     )
 
-    all_left_positions = rng.integers(
-        low=0,
-        high=max_position + 1,
-        size=num_samples,
+    all_top_positions = (
+        patch_locations[:, 0]
+    )
+
+    all_left_positions = (
+        patch_locations[:, 1]
     )
 
     # ============================================================
@@ -714,6 +719,13 @@ def main():
             "steps": STEPS,
             "learning_rate": LEARNING_RATE,
             "seed": SEED,
+            "patch_location_generation": (
+                "paired_top_left_per_image"
+            ),
+            "patch_locations": torch.tensor(
+                patch_locations,
+                dtype=torch.long,
+            ),
             "top_positions": torch.tensor(
                 all_top_positions,
                 dtype=torch.long,
@@ -754,6 +766,9 @@ def main():
         "steps": STEPS,
         "learning_rate": LEARNING_RATE,
         "seed": SEED,
+        "patch_location_generation": (
+            "paired_top_left_per_image"
+        ),
         "clean_accuracy": clean_accuracy,
         "adversarial_accuracy": adversarial_accuracy,
         "originally_correct": originally_correct,
