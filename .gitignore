@@ -5,3 +5,6 @@ data/raw/
 data/processed/
 results/logs/
 .DS_Store
+
+imagenet_download.log
+imagenet_download_parallel.log
